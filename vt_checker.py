@@ -25,6 +25,8 @@ Features:
 
 import sys
 import os
+import shutil
+import winreg
 import json
 import time
 import math
@@ -754,6 +756,436 @@ class ApiKeyDialog(tk.Toplevel):
 
 
 # ============================================================================
+# Windows Context Menu Integration & In-App Manager
+# ============================================================================
+
+CONTEXT_MENU_REG_KEYS = [
+    (r"Software\Classes\*\shell\ScanWithVirusTotal", "%1"),
+    (r"Software\Classes\Directory\shell\ScanWithVirusTotal", "%1"),
+    (r"Software\Classes\Directory\Background\shell\ScanWithVirusTotal", "%V")
+]
+
+MENU_TITLE = "Scan with VirusTotal"
+
+
+def is_context_menu_installed() -> bool:
+    """Checks whether the context menu entry exists in HKCU."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\ScanWithVirusTotal\command") as key:
+            val, _ = winreg.QueryValueEx(key, "")
+            return bool(val and val.strip())
+    except Exception:
+        return False
+
+
+def get_installed_context_menu_info() -> Dict[str, Any]:
+    """Returns detailed status of the context menu entries."""
+    info = {"installed": False, "command": "", "icon": "", "subkeys": {}}
+    for subkey, _ in CONTEXT_MENU_REG_KEYS:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey + r"\command") as k:
+                cmd, _ = winreg.QueryValueEx(k, "")
+                info["subkeys"][subkey] = cmd
+                if not info["command"] and cmd:
+                    info["command"] = cmd
+        except Exception:
+            info["subkeys"][subkey] = None
+
+    info["installed"] = any(cmd is not None for cmd in info["subkeys"].values())
+    return info
+
+
+def install_context_menu() -> Tuple[bool, str]:
+    """
+    Registers the context menu entries into HKCU for Files (*), Folders (Directory),
+    and Folder Backgrounds. Copies executable and icon to %LOCALAPPDATA%\\VirusTotalChecker if needed.
+    """
+    try:
+        target_dir = get_app_dir()
+        os.makedirs(target_dir, exist_ok=True)
+        target_exe = os.path.join(target_dir, "vt_checker.exe")
+        target_ico = os.path.join(target_dir, "vt_icon.ico")
+
+        # 1. Determine source executable
+        if getattr(sys, 'frozen', False):
+            source_exe = sys.executable
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            candidates = [
+                os.path.join(base_dir, "dist", "vt_checker.exe"),
+                os.path.join(base_dir, "vt_checker.exe"),
+                target_exe
+            ]
+            source_exe = None
+            for c in candidates:
+                if os.path.isfile(c):
+                    source_exe = c
+                    break
+
+        # 2. Copy executable to AppData if needed
+        final_exe = None
+        if source_exe and os.path.isfile(source_exe):
+            if os.path.abspath(source_exe).lower() != os.path.abspath(target_exe).lower():
+                try:
+                    shutil.copy2(source_exe, target_exe)
+                    final_exe = target_exe
+                except Exception:
+                    if os.path.isfile(target_exe):
+                        final_exe = target_exe
+                    else:
+                        final_exe = source_exe
+            else:
+                final_exe = target_exe
+        elif os.path.isfile(target_exe):
+            final_exe = target_exe
+
+        # 3. Locate and copy icon
+        icon_candidates = [
+            os.path.join(base_dir, "vt_icon.ico"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "vt_icon.ico"),
+            target_ico
+        ]
+        icon_target = None
+        for ico in icon_candidates:
+            if os.path.isfile(ico):
+                if os.path.abspath(ico).lower() != os.path.abspath(target_ico).lower():
+                    try:
+                        shutil.copy2(ico, target_ico)
+                        icon_target = target_ico
+                    except Exception:
+                        icon_target = ico
+                else:
+                    icon_target = target_ico
+                break
+
+        if not icon_target and final_exe:
+            icon_target = final_exe
+
+        # Fallback if no compiled exe was found (dev python mode)
+        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.isfile(pythonw):
+            pythonw = sys.executable
+        script_path = os.path.join(base_dir, "vt_checker.py")
+
+        # 4. Write registry entries
+        for subkey, arg_spec in CONTEXT_MENU_REG_KEYS:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, subkey) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, MENU_TITLE)
+                if icon_target and os.path.isfile(icon_target):
+                    winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, f'"{icon_target}"')
+
+            if final_exe:
+                cmd_str = f'"{final_exe}" "{arg_spec}"'
+            else:
+                cmd_str = f'"{pythonw}" "{script_path}" "{arg_spec}"'
+
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, subkey + r"\command") as cmd_key:
+                winreg.SetValueEx(cmd_key, "", 0, winreg.REG_SZ, cmd_str)
+
+        return True, "Context menu enabled successfully!"
+    except Exception as e:
+        return False, f"Failed to register context menu: {e}"
+
+
+def uninstall_context_menu() -> Tuple[bool, str]:
+    """Removes context menu registry keys from HKCU."""
+    errors = []
+    for subkey, _ in CONTEXT_MENU_REG_KEYS:
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, subkey + r"\command")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            errors.append(f"HKCU\\{subkey}\\command: {e}")
+
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, subkey)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            errors.append(f"HKCU\\{subkey}: {e}")
+
+    if errors:
+        return False, "Errors while removing registry keys:\n" + "\n".join(errors)
+    return True, "Context menu removed successfully."
+
+
+class ContextMenuPromptDialog(tk.Toplevel):
+    """
+    Non-intrusive modal prompt shown on startup if context menu is not yet installed
+    and the app was launched standalone without target arguments.
+    """
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Enable Right-Click Menu - SafeLaunch")
+        self.geometry("490x210")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self.result = False
+
+        self._center_window(parent, 490, 210)
+        self._build_ui()
+
+    def _center_window(self, parent, width, height):
+        self.update_idletasks()
+        try:
+            px = parent.winfo_rootx()
+            py = parent.winfo_rooty()
+            pw = parent.winfo_width()
+            ph = parent.winfo_height()
+            x = px + (pw - width) // 2
+            y = py + (ph - height) // 2
+        except Exception:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            x = (sw - width) // 2
+            y = (sh - height) // 2
+        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+
+    def _build_ui(self):
+        container = ttk.Frame(self, padding=20)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        header_box = ttk.Frame(container)
+        header_box.pack(fill=tk.X, pady=(0, 10))
+
+        lbl_icon = ttk.Label(header_box, text="🛡️", font=("Segoe UI", 20))
+        lbl_icon.pack(side=tk.LEFT, padx=(0, 10))
+
+        title_box = ttk.Frame(header_box)
+        title_box.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        lbl_title = ttk.Label(
+            title_box,
+            text="Add SafeLaunch to Right-Click Menu?",
+            font=("Segoe UI", 12, "bold"),
+            foreground="#0d47a1"
+        )
+        lbl_title.pack(anchor="w")
+
+        lbl_desc = ttk.Label(
+            container,
+            text="SafeLaunch is not yet added to your Windows Right-Click context menu.\n\n"
+                 "Would you like to enable 'Scan with VirusTotal' for files and folders now?",
+            font=("Segoe UI", 9),
+            justify="left",
+            wraplength=440
+        )
+        lbl_desc.pack(anchor="w", pady=(0, 20))
+
+        btn_box = ttk.Frame(container)
+        btn_box.pack(fill=tk.X, side=tk.BOTTOM)
+
+        btn_enable = ttk.Button(
+            btn_box,
+            text="Yes, Enable Now",
+            command=self._on_enable,
+            style="Accent.TButton"
+        )
+        btn_enable.pack(side=tk.RIGHT, padx=(8, 0))
+
+        btn_skip = ttk.Button(
+            btn_box,
+            text="Skip",
+            command=self._on_skip
+        )
+        btn_skip.pack(side=tk.RIGHT)
+
+        self.bind("<Return>", lambda e: self._on_enable())
+        self.bind("<Escape>", lambda e: self._on_skip())
+
+    def _on_enable(self):
+        self.result = True
+        self.destroy()
+
+    def _on_skip(self):
+        self.result = False
+        self.destroy()
+
+
+class ContextMenuManagerDialog(tk.Toplevel):
+    """
+    In-App Context Menu Manager Dialog:
+    Displays current status (Installed / Not Installed) with options to
+    Install/Repair or Remove/Uninstall the Windows context menu integration.
+    """
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Windows Context Menu Manager - SafeLaunch")
+        self.geometry("530x310")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self.parent = parent
+        self._center_window(parent, 530, 310)
+        self._build_ui()
+        self._refresh_status()
+
+    def _center_window(self, parent, width, height):
+        self.update_idletasks()
+        try:
+            px = parent.winfo_rootx()
+            py = parent.winfo_rooty()
+            pw = parent.winfo_width()
+            ph = parent.winfo_height()
+            x = px + (pw - width) // 2
+            y = py + (ph - height) // 2
+        except Exception:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            x = (sw - width) // 2
+            y = (sh - height) // 2
+        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+
+    def _build_ui(self):
+        container = ttk.Frame(self, padding=20)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        header_box = ttk.Frame(container)
+        header_box.pack(fill=tk.X, pady=(0, 12))
+
+        lbl_icon = ttk.Label(header_box, text="🖱️", font=("Segoe UI", 20))
+        lbl_icon.pack(side=tk.LEFT, padx=(0, 10))
+
+        title_box = ttk.Frame(header_box)
+        title_box.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        lbl_title = ttk.Label(
+            title_box,
+            text="Windows Context Menu Integration",
+            font=("Segoe UI", 12, "bold"),
+            foreground="#0d47a1"
+        )
+        lbl_title.pack(anchor="w")
+
+        lbl_sub = ttk.Label(
+            title_box,
+            text="Manage 'Scan with VirusTotal' in Windows Explorer right-click menu.",
+            font=("Segoe UI", 8),
+            foreground="#666666"
+        )
+        lbl_sub.pack(anchor="w")
+
+        # Status Card Box
+        self.status_box = tk.Frame(container, padx=14, pady=12, relief=tk.GROOVE, bd=1)
+        self.status_box.pack(fill=tk.X, pady=(0, 18))
+
+        self.lbl_status_badge = tk.Label(
+            self.status_box,
+            text="Checking status...",
+            font=("Segoe UI", 10, "bold")
+        )
+        self.lbl_status_badge.pack(anchor="w")
+
+        self.lbl_status_desc = tk.Label(
+            self.status_box,
+            text="",
+            font=("Segoe UI", 8),
+            justify="left",
+            wraplength=460
+        )
+        self.lbl_status_desc.pack(anchor="w", pady=(4, 0))
+
+        # Action Buttons Frame
+        btn_box = ttk.Frame(container)
+        btn_box.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self.btn_install = ttk.Button(
+            btn_box,
+            text="➕ Install / Repair Context Menu",
+            command=self._do_install,
+            style="Accent.TButton"
+        )
+        self.btn_install.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.btn_uninstall = ttk.Button(
+            btn_box,
+            text="➖ Remove / Uninstall Context Menu",
+            command=self._do_uninstall
+        )
+        self.btn_uninstall.pack(side=tk.LEFT)
+
+        btn_close = ttk.Button(
+            btn_box,
+            text="Close",
+            command=self.destroy
+        )
+        btn_close.pack(side=tk.RIGHT)
+
+    def _refresh_status(self):
+        info = get_installed_context_menu_info()
+        if info["installed"]:
+            self.status_box.config(bg="#E8F8F0", highlightbackground="#81C784", highlightthickness=1)
+            self.lbl_status_badge.config(
+                text="🟢 Status: Installed & Active",
+                bg="#E8F8F0",
+                fg="#1B5E20"
+            )
+            cmd_preview = info["command"]
+            desc_text = (
+                "Right-click context menu is active for All Files (*), Folders, and Background.\n"
+                f"Command: {cmd_preview}"
+            )
+            self.lbl_status_desc.config(
+                text=desc_text,
+                bg="#E8F8F0",
+                fg="#2E7D32"
+            )
+            self.btn_install.config(text="🔄 Repair / Update Context Menu")
+            self.btn_uninstall.config(state=tk.NORMAL)
+        else:
+            self.status_box.config(bg="#F5F5F5", highlightbackground="#BDBDBD", highlightthickness=1)
+            self.lbl_status_badge.config(
+                text="⚪ Status: Not Installed",
+                bg="#F5F5F5",
+                fg="#616161"
+            )
+            self.lbl_status_desc.config(
+                text="SafeLaunch is not currently registered in the Windows Right-Click context menu.\n"
+                     "Click 'Install Context Menu' below to enable 1-click scanning in File Explorer.",
+                bg="#F5F5F5",
+                fg="#757575"
+            )
+            self.btn_install.config(text="➕ Install Context Menu")
+            self.btn_uninstall.config(state=tk.DISABLED)
+
+    def _do_install(self):
+        success, msg = install_context_menu()
+        if success:
+            show_notification("SafeLaunch", "Context menu enabled successfully!", timeout_seconds=3)
+            messagebox.showinfo(
+                "Context Menu Enabled",
+                "Context menu enabled successfully!\n\n"
+                "Right-click any file or folder in File Explorer to scan with SafeLaunch.",
+                parent=self
+            )
+            self._refresh_status()
+            if hasattr(self.parent, "lbl_status"):
+                self.parent.lbl_status.config(text="Context menu enabled successfully!")
+        else:
+            messagebox.showerror("Installation Failed", msg, parent=self)
+
+    def _do_uninstall(self):
+        success, msg = uninstall_context_menu()
+        if success:
+            show_notification("SafeLaunch", "Context menu removed successfully.", timeout_seconds=3)
+            messagebox.showinfo(
+                "Context Menu Removed",
+                "SafeLaunch has been removed from the Windows Right-Click context menu.",
+                parent=self
+            )
+            self._refresh_status()
+            if hasattr(self.parent, "lbl_status"):
+                self.parent.lbl_status.config(text="Context menu removed from Windows Explorer.")
+        else:
+            messagebox.showerror("Uninstall Failed", msg, parent=self)
+
+
+# ============================================================================
 # Consolidated Summary GUI Window
 # ============================================================================
 
@@ -812,6 +1244,9 @@ class SafeLaunchGUI(tk.Tk):
 
         # Auto-initialize and start scan on open if target provided
         self.after(100, self._initialize_scan)
+
+        # Automatic Context Menu Detection on Launch (if standalone without target)
+        self.after(300, self._check_context_menu_on_launch)
 
     def _center_window(self, width, height):
         self.update_idletasks()
@@ -952,7 +1387,15 @@ class SafeLaunchGUI(tk.Tk):
         top_btn_box = ttk.Frame(header_frame)
         top_btn_box.pack(side=tk.RIGHT)
 
-        # 1. Paste Target Button
+        # 1. Context Menu Manager Button
+        self.btn_context_menu = ttk.Button(
+            top_btn_box,
+            text="🖱️ Context Menu",
+            command=self._open_context_menu_manager
+        )
+        self.btn_context_menu.pack(side=tk.LEFT, padx=3)
+
+        # 2. Paste Target Button
         self.btn_paste_target = ttk.Button(
             top_btn_box,
             text="📋 Paste Target",
@@ -1939,6 +2382,39 @@ class SafeLaunchGUI(tk.Tk):
         dlg = ApiKeyDialog(self, current_key=self.api_key)
         self.wait_window(dlg)
         self.api_key = get_api_key()
+
+    def _open_context_menu_manager(self):
+        dlg = ContextMenuManagerDialog(self)
+        self.wait_window(dlg)
+
+    def _check_context_menu_on_launch(self):
+        """
+        Checks Windows Registry on startup. If not installed and no target
+        was passed on launch, displays a non-intrusive prompt to enable it.
+        """
+        if self.target_path:
+            return
+
+        if not is_context_menu_installed():
+            dlg = ContextMenuPromptDialog(self)
+            self.wait_window(dlg)
+            if dlg.result:
+                success, msg = install_context_menu()
+                if success:
+                    show_notification(
+                        "SafeLaunch Context Menu",
+                        "Context menu enabled successfully!",
+                        timeout_seconds=3
+                    )
+                    messagebox.showinfo(
+                        "Context Menu Enabled",
+                        "Context menu enabled successfully!\n\n"
+                        "You can now right-click any file or folder in Windows Explorer to scan with SafeLaunch.",
+                        parent=self
+                    )
+                    self.lbl_status.config(text="Context menu enabled successfully!")
+                else:
+                    messagebox.showerror("Setup Failed", msg, parent=self)
 
 
 # ============================================================================
