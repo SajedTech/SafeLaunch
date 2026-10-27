@@ -93,6 +93,8 @@ pip install windnd pyinstaller
 build.bat
 The compiled executable will be generated inside the dist/ directory.
 
+---
+
 ⚠️ Security & Educational Disclaimer
 This software is developed strictly for educational, defensive, and security research purposes.
 
