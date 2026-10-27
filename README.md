@@ -9,9 +9,9 @@
   Developed with passion by **Sajed Tech**
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-  ![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D6?logo=windows&logoColor=white)
-  ![Python](https://img.shields.io/badge/Python-3.8+-3776AB?logo=python&logoColor=white)
-  ![VirusTotal](https://img.shields.io/badge/VirusTotal-v3%20API-3B78FF?logo=virustotal&logoColor=white)
+  [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D6?logo=windows&logoColor=white)](https://github.com/SajedTech/SafeLaunch/releases/latest)
+  [![Python](https://img.shields.io/badge/Python-3.8+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+  [![VirusTotal](https://img.shields.io/badge/VirusTotal-v3%20API-3B78FF?logo=virustotal&logoColor=white)](https://docs.virustotal.com/reference/overview)
 
 </div>
 
@@ -91,16 +91,21 @@ pip install windnd pyinstaller
 
 # 3. Build standalone executable
 build.bat
-The compiled executable will be generated inside the dist/ directory.
+```
+
+The compiled executable will be generated inside the `dist/` directory.
 
 ---
 
-⚠️ Security & Educational Disclaimer
-This software is developed strictly for educational, defensive, and security research purposes.
+## ⚠️ Security & Educational Disclaimer
 
-False Positives Note: Game modifications, emulators, and cracked binaries frequently trigger high detection ratios on VirusTotal due to code-obfuscation (packers/cryptors), memory modification hooks, and DRM-bypass techniques. A high score does not always guarantee an active Trojan, nor does a 0/70 guarantee absolute safety against brand-new or zero-day threats.
+This software is developed strictly for **educational, defensive, and security research purposes**. 
 
-Liability: The author assumes no responsibility for any misuse, system damage, or security breaches resulting from opening or executing untrusted files analyzed by this tool.
+- **False Positives Note**: Game modifications, emulators, and cracked binaries frequently trigger high detection ratios on VirusTotal due to code-obfuscation (packers/cryptors), memory modification hooks, and DRM-bypass techniques. A high score does not always guarantee an active Trojan, nor does a `0/70` guarantee absolute safety against brand-new or zero-day threats.
+- **Liability**: The author assumes no responsibility for any misuse, system damage, or security breaches resulting from opening or executing untrusted files analyzed by this tool.
 
-📜 License
-Distributed under the MIT License. See the LICENSE file for more information.
+---
+
+## 📜 License
+
+Distributed under the **MIT License**. See the [LICENSE](LICENSE) file for more information.
