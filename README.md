@@ -1,140 +1,104 @@
-# SafeLaunch / VirusTotal Inspector for Windows
-![SafeLaunch Preview](Securityphoto.png)
-A fast, lightweight Windows utility that integrates with the Windows Explorer Context Menu (Right-Click menu) for **both Files and Folders** to inspect suspicious binaries on **VirusTotal** using a **Consolidated Summary GUI** and **Headless API Lookups**.
+<div align="center">
+
+  <img src="vt_icon.ico" alt="SafeLaunch Logo" width="100" />
+
+  # SafeLaunch
+
+  **Lightweight, Zero-Dependency Windows Context Menu Security Inspector**
+
+  Developed with passion by **Sajed Tech**
+
+  [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+  ![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D6?logo=windows&logoColor=white)
+  ![Python](https://img.shields.io/badge/Python-3.8+-3776AB?logo=python&logoColor=white)
+  ![VirusTotal](https://img.shields.io/badge/VirusTotal-v3%20API-3B78FF?logo=virustotal&logoColor=white)
+
+</div>
 
 ---
 
-## Key Features & Highlights
+<div align="center">
+  <img src="Securityphoto.png" alt="SafeLaunch Preview" width="850" />
+</div>
 
-- 📂 **Folder & File Context Menu Integration**: Right-click any file, folder, or folder background to instantly inspect root executable binaries (`*.exe`, `*.dll`).
-- ⚡ **Headless VirusTotal v3 API Lookups**: Queries `GET /api/v3/files/{hash}` directly in the background. Fetches detection scores (`malicious / total engines`, type, status) silently without flooding your browser with tabs.
-- 🚀 **Smooth Auto-Scan on Open**:
-  - Scanning begins immediately when a folder or file is opened (via context menu, drag & drop, Open File, or Open Folder).
-- ⏹ **Instant Stop / Cancel Scan Mechanism**:
-  - Powered by responsive `threading.Event()` synchronization instead of blocking sleeps.
-  - Dynamically transforms the `[ ▶ Rescan All ]` button into a prominent red **`[ ⏹ Stop Scan (Esc) ]`** button while scanning.
-  - Pressing **<kbd>Escape</kbd>** or clicking Stop **instantly terminates the queue and cancels the cooldown timer in 0 milliseconds**, allowing you to inspect specific files with `[ ⚡ Scan Selected ]`.
-- 🎯 **Selective API Scanning (`[ ⚡ Scan Selected ]`)**:
-  - Scan only the specific files you have selected (or any remaining unscanned ones).
-  - Conserves your API quota and avoids unnecessary rate-limiting pauses on known files.
-- 📋 **Target Path Quick Copy**:
-  - Located directly beside the Target label in the header: **`[ 📋 Copy Path ]`**.
-  - Copies the loaded folder or file absolute path straight to the clipboard with one click.
-- 🖱 **Multi-Row Selection & Bulk Operations**:
-  - Extended selection enabled: use <kbd>Ctrl</kbd>+Click or <kbd>Shift</kbd>+Click to select multiple rows.
-  - **`[ 🌐 Open Report ]`**: Opens VirusTotal analysis pages for **all selected files simultaneously** in new browser tabs.
-  - **`[ 📋 Copy Hash ]`**: Copies SHA-256 hashes of **all selected files** (one per line) directly to the clipboard.
-- 🗑 **Delete / Remove Items from Table**:
-  - Remove items using the **<kbd>Delete</kbd>** or **<kbd>Backspace</kbd>** keys, the right-click menu (**"🗑 Remove from List"**), or the toolbar button (**`[ 🗑 Remove Selected ]`**).
-  - Automatically recalculates and updates the top summary cards (Total, Clean, Malicious, Unknown) in real time.
-- ⏱ **Sleek Progress Bar & Rate-Limit Cooldown**:
-  - Seamlessly tracks the free tier limit (4 requests/minute).
-  - During cooldown, displays an eye-catching inline pill badge: **`⏳ Cooldown: 12s (API Quota)`** alongside clear status text.
-  - Automatically catches and retries HTTP 429 quota events.
-- 🛡 **Accurate Status Bar (Zero False Sense of Security)**:
-  - Dynamically reports the actual state of files (`"Waiting for API Key or user action"`, `"Inspecting file X of Y..."`, `"Completed: X clean, Y suspicious"`).
-  - Never displays "all clean" when files are unverified or skipped.
-- ⌨ **Layout-Independent Keyboard Pasting**:
-  - Direct **`[ 📋 Paste ]`** button beside the API key field.
-  - Intercepts virtual key codes (<kbd>Ctrl</kbd>+<kbd>V</kbd>) across all Windows keyboard layouts (Arabic, Cyrillic, Hebrew, Latin, etc.).
-  - Right-click mouse context menu with Cut / Copy / Paste / Select All.
-- 🖥 **Wide SHA-256 Display & Scrollbars**:
-  - Full 520px column width displays the complete 64-hex SHA-256 hash without truncation.
-  - Both horizontal and vertical scrollbars included.
+## ⚡ Overview
+
+**SafeLaunch** is a high-speed, lightweight Windows security utility designed to inspect suspicious files and executable folders before execution. Integrated seamlessly into the Windows Explorer Context Menu (Right-Click), SafeLaunch automatically extracts root executables (`*.exe`, `*.dll`), computes SHA-256 hashes, and queries the **VirusTotal v3 API** headlessly without cluttering your browser with tabs.
 
 ---
 
-## File Structure
+## 🛠 Key Features
 
-```
-SafeLaunch/
-├── vt_checker.py             # Complete Python utility & Tkinter GUI
-├── context_menu_manager.py   # Registry manager using standard library 'winreg'
-├── vt_icon.ico               # High-res security shield icon
-├── build.bat                 # PyInstaller compilation script
-├── install.bat               # Installs context menu for Files and Folders
-├── uninstall.bat             # Clean uninstaller script
-└── dist/
-    └── vt_checker.exe        # Standalone windowless executable
-```
+- 📂 **Windows Context Menu Integration**: Right-click any file, folder, or folder background to instantly inspect binaries.
+- 🖱️ **Built-In Context Menu Self-Detection & In-App Manager**:
+  - Automatically detects if the Explorer right-click integration is installed on startup and offers 1-click activation.
+  - Dedicated **`[ 🖱️ Context Menu ]`** button in the header allows you to install, repair, or uninstall context menu entries directly inside the application without running batch files.
+- ⚡ **Headless VirusTotal v3 API Lookups**: Queries detection metrics silently in the background with zero browser tab spam.
+- 🚀 **Native Drag & Drop & Clipboard Paste**:
+  - Drag and drop any file or directory directly into the window.
+  - Paste files or clipboard paths with <kbd>Ctrl</kbd> + <kbd>V</kbd> or via the **`[ 📋 Paste Target ]`** button.
+  - Non-destructive append mode: newly added files are queued alongside existing ones.
+- ⏹ **Instant Stop / Cancel Mechanism**:
+  - Dynamic **`[ ⏹ Stop Scan ]`** button powered by `threading.Event()` cancels active queries and cooldowns in **0 ms**.
+  - Global <kbd>Escape</kbd> shortcut to halt the scanning queue immediately.
+- 🎯 **Selective API Scanning**:
+  - Use **`[ ⚡ Scan Selected ]`** to inspect specific files, preserving your free API rate-limit quota.
+- ⏱ **Smart Rate-Limit Engine**:
+  - Sliding-window cooldown manager for the VirusTotal free tier (4 req/min) with a visual countdown badge.
+- 🛡 **Zero False Sense of Security**:
+  - Accurate status bar distinguishing verified clean files from unverified or skipped targets.
+- 🖱 **Multi-Row Operations**:
+  - Bulk report opening in browser and multi-hash clipboard copying via <kbd>Ctrl</kbd>+Click or <kbd>Shift</kbd>+Click.
+- 🗑 **Table Management**:
+  - Remove verified files from the list using <kbd>Delete</kbd>, <kbd>Backspace</kbd>, or toolbar buttons with real-time counter updates.
 
 ---
 
-## Quick Setup & Compilation
+## 📥 Installation & Download
 
-### 1. Build Standalone Executable
-Double-click `build.bat` or run:
+Download the latest pre-compiled binaries from the **[Releases Page](https://github.com/SajedTech/SafeLaunch/releases/latest)**.
+
+### Option 1: In-App 1-Click Activation (Recommended)
+1. Download and run **`vt_checker.exe`** directly.
+2. If not yet installed, SafeLaunch automatically prompts you on first launch to enable the Right-Click menu in one click.
+3. You can also click **`[ 🖱️ Context Menu ]`** in the top-right header at any time to Install, Repair, or Remove the integration directly inside the app.
+
+### Option 2: Automated Batch Scripts
+- Run **`install.bat`** to deploy to `%LOCALAPPDATA%\VirusTotalChecker` and register context menu keys.
+- Run **`uninstall.bat`** at any time to cleanly remove registry keys from `HKEY_CURRENT_USER`.
+
+---
+
+## 💻 Tech Stack
+
+- **Core Runtime**: Python 3 (Tkinter GUI, Native Win32 Subclassing)
+- **Windows Integration**: `winreg`, `ctypes` (64-bit safe prototypes), `CF_HDROP`
+- **Interactivity**: `windnd` (Native Win32 drag-and-drop event handling)
+- **Threat Intelligence**: VirusTotal v3 REST API (Sliding window rate-limiter)
+- **Distribution**: Standalone windowless executable compiled via PyInstaller
+
+---
+
+## ⚙️ Building from Source
+
 ```cmd
+# 1. Clone repository
+git clone [https://github.com/SajedTech/SafeLaunch.git](https://github.com/SajedTech/SafeLaunch.git)
+cd SafeLaunch
+
+# 2. Install dependencies
+pip install windnd pyinstaller
+
+# 3. Build standalone executable
 build.bat
-```
-*PyInstaller command:*
-```cmd
-pyinstaller --noconsole --onefile --clean --icon="vt_icon.ico" --name="vt_checker" vt_checker.py
-```
-This produces `dist\vt_checker.exe` (windowless, standalone, zero-console flicker).
+The compiled executable will be generated inside the dist/ directory.
 
-### 2. Install Context Menu Integration
-Double-click `install.bat`:
-```cmd
-install.bat
-```
-*What this registers (in `HKEY_CURRENT_USER` - no admin rights needed):*
-1. **`HKCU\Software\Classes\*\shell\ScanWithVirusTotal`** (All files)
-2. **`HKCU\Software\Classes\Directory\shell\ScanWithVirusTotal`** (Folders)
-3. **`HKCU\Software\Classes\Directory\Background\shell\ScanWithVirusTotal`** (Inside folder background)
+⚠️ Security & Educational Disclaimer
+This software is developed strictly for educational, defensive, and security research purposes.
 
----
+False Positives Note: Game modifications, emulators, and cracked binaries frequently trigger high detection ratios on VirusTotal due to code-obfuscation (packers/cryptors), memory modification hooks, and DRM-bypass techniques. A high score does not always guarantee an active Trojan, nor does a 0/70 guarantee absolute safety against brand-new or zero-day threats.
 
-## How to Use
+Liability: The author assumes no responsibility for any misuse, system damage, or security breaches resulting from opening or executing untrusted files analyzed by this tool.
 
-### 1. Inspecting a Folder
-1. Right-click any folder in Windows Explorer.
-   *(On Windows 11: select "Show more options" or press <kbd>Shift</kbd> + <kbd>F10</kbd>).*
-2. Select **"Scan with VirusTotal"**.
-3. SafeLaunch automatically scans the folder root for `*.exe` and `*.dll` binaries and begins scanning.
-4. Hit **`[ ⏹ Stop Scan ]`** (or press <kbd>Esc</kbd>) at any time to halt the queue and inspect specific files with **`[ ⚡ Scan Selected ]`**.
-
-### 2. Inspecting a Single File
-- Right-click any single file and select **"Scan with VirusTotal"**.
-- Displays detection statistics, computes hash, and copies SHA-256 to clipboard.
-
-### 3. Standalone Mode
-- Run `vt_checker.exe` directly to open the GUI.
-- Use **"Open File..."** or **"Open Folder..."** to inspect targets on demand.
-
----
-
-## Uninstallation
-
-To cleanly remove Context Menu entries:
-```cmd
-uninstall.bat
-```
-Or via Python:
-```bash
-python context_menu_manager.py --uninstall
-```
-This removes all registry keys and cleans up `%LOCALAPPDATA%\VirusTotalChecker`.
-
----
-
-## Prerequisites & Compatibility
-
-- **OS**: Windows 10 / Windows 11 (64-bit).
-- **Standalone Mode**: No external dependencies or Python installation required if using the precompiled `vt_checker.exe`.
-- **Building from Source**: Requires Python 3.8+ and `pyinstaller` (`pip install pyinstaller`).
-
----
-
-## ⚠️ Security & Educational Disclaimer
-
-This software is developed strictly for **educational, defensive, and security research purposes**. 
-
-- **False Positives Note**: Game modifications, emulators, and cracked binaries frequently trigger high detection ratios on VirusTotal due to code-obfuscation (packers/cryptors), memory modification hooks, and DRM-bypass techniques. A high score does not always guarantee an active Trojan, nor does a `0/70` guarantee absolute safety against brand-new or zero-day threats.
-- **Liability**: The author assumes no responsibility for any misuse, system damage, or security breaches resulting from opening or executing untrusted files analyzed by this tool.
-
----
-
-## License
-
-Distributed under the **MIT License**. See the [LICENSE](LICENSE) file for more information.
+📜 License
+Distributed under the MIT License. See the LICENSE file for more information.
