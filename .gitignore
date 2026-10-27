@@ -1,0 +1,14 @@
+# Config & Secrets
+config.json
+*.env
+
+# Build Artifacts
+build/
+dist/
+*.spec
+__pycache__/
+*.py[cod]
+
+# IDEs
+.vscode/
+.idea/  
