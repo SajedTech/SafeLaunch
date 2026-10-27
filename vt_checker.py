@@ -1,23 +1,26 @@
 """
 VirusTotal Context Menu Checker & SafeLaunch Inspector (vt_checker.py)
 -----------------------------------------------------------------------
-A lightweight, zero-dependency Windows utility that integrates with the
-Windows Context Menu for both Files (*) and Folders (Directory).
+A lightweight Windows utility that integrates with the Windows Context Menu
+for both Files (*) and Folders (Directory).
 
 Features:
-1. Single-file inspection & folder-level scanning of root executables (*.exe, *.dll).
-2. Auto-Scan on open with instant Stop / Cancel mechanism using threading.Event.
-3. Prominent dynamic [ ⏹ Stop Scan ] button with global <Escape> hotkey.
-4. Headless VirusTotal v3 API lookups without opening multiple browser tabs.
-5. Clean Tkinter Consolidated Summary GUI with detection stats and color coding.
-6. Robust rate limiting (free tier 4 req/min) with sleek cooldown badge and status.
-7. Multi-row selection (extended mode) with bulk browser opening and hash copying.
-8. Delete/Remove items from table with Delete key, context menu, and auto-recalculation.
-9. Selective API Scanning ("Scan Selected") to save quota and avoid rate limit delays.
-10. Target Path Copy button in header with direct clipboard integration.
-11. Accurate status bar reporting (no false sense of security for unverified files).
-12. Full clipboard paste support in API dialog across all keyboard language layouts.
-13. Generous column widths for complete 64-char SHA-256 hash display.
+1. Rock-solid Win32 Drag & Drop support using windnd (zero crash on 64-bit Windows).
+2. Append Mode: Dragging or pasting new files/folders appends to the current list
+   without wiping existing items, automatically skipping duplicates.
+3. Paste Target (Ctrl+V & button) supporting CF_HDROP (Explorer copied files) & text paths.
+4. Auto-Scan on open/drop/paste with instant Stop / Cancel mechanism using threading.Event.
+5. Prominent dynamic [ ⏹ Stop Scan ] button with global <Escape> hotkey.
+6. Headless VirusTotal v3 API lookups without opening multiple browser tabs.
+7. Clean Tkinter Consolidated Summary GUI with detection stats and color coding.
+8. Robust rate limiting (free tier 4 req/min) with sleek cooldown badge and status.
+9. Multi-row selection (extended mode) with bulk browser opening and hash copying.
+10. Delete/Remove items from table with Delete key, context menu, and auto-recalculation.
+11. Selective API Scanning ("Scan Selected") to save quota and avoid rate limit delays.
+12. Target Path Copy button in header with direct clipboard integration.
+13. Accurate status bar reporting (no false sense of security for unverified files).
+14. Full clipboard paste support in API dialog across all keyboard language layouts.
+15. Generous column widths for complete 64-char SHA-256 hash display.
 """
 
 import sys
@@ -38,6 +41,10 @@ from typing import Optional, List, Dict, Any, Tuple
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
+# Pure-Python Windows Drag & Drop library
+import windnd
+HAS_WINDND = True
+
 
 # Win32 Constants
 MB_OK = 0x00000000
@@ -47,6 +54,8 @@ MB_TOPMOST = 0x00040000
 MB_SETFOREGROUND = 0x00010000
 
 CF_UNICODETEXT = 13
+CF_HDROP = 15
+
 GMEM_MOVEABLE = 0x0002
 GMEM_ZEROINIT = 0x0040
 GHND = GMEM_MOVEABLE | GMEM_ZEROINIT
@@ -55,6 +64,7 @@ APP_DIR_NAME = "VirusTotalChecker"
 CONFIG_FILE_NAME = "config.json"
 FREE_TIER_RATE_LIMIT_DELAY = 15  # 4 requests/minute = 15s delay between requests
 FREE_TIER_BURST_MAX = 4          # Up to 4 queries before rate limiting cooldown kicks in
+EXECUTABLE_EXTS = ('.exe', '.dll')
 
 
 # ============================================================================
@@ -65,7 +75,9 @@ def set_win32_prototypes():
     """Configure ctypes prototypes for 64-bit/32-bit Windows API safety."""
     kernel32 = ctypes.windll.kernel32
     user32 = ctypes.windll.user32
+    shell32 = ctypes.windll.shell32
 
+    # Memory functions
     kernel32.GlobalAlloc.restype = ctypes.c_void_p
     kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
 
@@ -75,6 +87,7 @@ def set_win32_prototypes():
     kernel32.GlobalUnlock.restype = wintypes.BOOL
     kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
 
+    # Clipboard functions
     user32.OpenClipboard.restype = wintypes.BOOL
     user32.OpenClipboard.argtypes = [wintypes.HWND]
 
@@ -90,6 +103,17 @@ def set_win32_prototypes():
     user32.GetClipboardData.restype = ctypes.c_void_p
     user32.GetClipboardData.argtypes = [ctypes.c_uint]
 
+    user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
+    user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+
+    # Shell Drag & Drop functions
+    shell32.DragQueryFileW.restype = wintypes.UINT
+    shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
+
+    shell32.DragFinish.restype = None
+    shell32.DragFinish.argtypes = [wintypes.HANDLE]
+
+    # MessageBox functions
     user32.MessageBoxW.restype = ctypes.c_int
     user32.MessageBoxW.argtypes = [wintypes.HWND, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
 
@@ -161,6 +185,68 @@ def get_clipboard_text() -> str:
         return ""
     finally:
         user32.CloseClipboard()
+
+
+def get_clipboard_hdrop_files() -> List[str]:
+    """
+    Retrieves file/folder paths if the Windows Clipboard contains
+    Explorer-copied file objects (CF_HDROP = 15).
+    """
+    user32 = ctypes.windll.user32
+    shell32 = ctypes.windll.shell32
+
+    if not user32.IsClipboardFormatAvailable(CF_HDROP):
+        return []
+
+    if not user32.OpenClipboard(None):
+        return []
+
+    try:
+        h_drop = user32.GetClipboardData(CF_HDROP)
+        if not h_drop:
+            return []
+
+        count = shell32.DragQueryFileW(h_drop, 0xFFFFFFFF, None, 0)
+        files = []
+        buf = ctypes.create_unicode_buffer(1024)
+        for i in range(count):
+            length = shell32.DragQueryFileW(h_drop, i, buf, 1024)
+            if length > 0:
+                files.append(buf.value)
+        return files
+    except Exception:
+        return []
+    finally:
+        user32.CloseClipboard()
+
+
+def get_target_from_clipboard() -> List[str]:
+    """
+    Extracts valid target paths from clipboard:
+    1. Checks CF_HDROP (copied files from Windows Explorer).
+    2. Checks CF_UNICODETEXT for valid file or folder paths.
+    """
+    # 1. Check CF_HDROP
+    hdrop_files = get_clipboard_hdrop_files()
+    if hdrop_files:
+        valid_hdrop = [f for f in hdrop_files if os.path.exists(f)]
+        if valid_hdrop:
+            return valid_hdrop
+
+    # 2. Check text clipboard
+    raw_text = get_clipboard_text()
+    if raw_text:
+        lines = [line.strip().strip('\"').strip('\'') for line in raw_text.splitlines() if line.strip()]
+        valid_paths = [p for p in lines if os.path.exists(p)]
+        if valid_paths:
+            return valid_paths
+
+        # Check full raw string without newline splits
+        stripped_all = raw_text.strip().strip('\"').strip('\'')
+        if os.path.exists(stripped_all):
+            return [stripped_all]
+
+    return []
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -275,18 +361,16 @@ def find_high_risk_binaries(folder_path: str) -> List[str]:
     Locates high-risk executable binaries (*.exe, *.dll) in the root of the folder.
     Returns sorted list of absolute file paths.
     """
-    valid_exts = ('.exe', '.dll')
     binaries = []
     try:
         for entry in os.listdir(folder_path):
             full_path = os.path.join(folder_path, entry)
-            if os.path.isfile(full_path) and entry.lower().endswith(valid_exts):
+            if os.path.isfile(full_path) and entry.lower().endswith(EXECUTABLE_EXTS):
                 binaries.append(full_path)
     except Exception as e:
         show_error_dialog(f"Error accessing folder contents:\n\n{str(e)}")
         return []
 
-    # Sort: .exe files first, then .dll files, alphabetically
     binaries.sort(key=lambda p: (0 if p.lower().endswith('.exe') else 1, os.path.basename(p).lower()))
     return binaries
 
@@ -302,19 +386,16 @@ def identify_main_executable(folder_path: str, binaries: List[str]) -> Optional[
     if not exe_files:
         return binaries[0]
 
-    # Check for name match (e.g. FolderName.exe)
     for exe in exe_files:
         stem = os.path.splitext(os.path.basename(exe))[0].lower()
         if stem == folder_name:
             return exe
 
-    # Check for common main binary names
     common_names = ('main.exe', 'app.exe', 'setup.exe', 'launcher.exe', 'start.exe')
     for exe in exe_files:
         if os.path.basename(exe).lower() in common_names:
             return exe
 
-    # Otherwise choose largest .exe by size
     try:
         return max(exe_files, key=os.path.getsize)
     except Exception:
@@ -502,7 +583,6 @@ class ApiKeyDialog(tk.Toplevel):
         self.result_action = "cancel"
         self.entered_key = current_key
 
-        # Center on parent
         self.update_idletasks()
         pw = parent.winfo_width()
         ph = parent.winfo_height()
@@ -682,7 +762,7 @@ class SafeLaunchGUI(tk.Tk):
     Main Consolidated Summary GUI:
     Displays high-risk binaries, computed SHA-256 hashes, detection statistics,
     and visual status indicators (Clean, Malicious, Suspicious, Unknown).
-    Includes instant cancel/stop mechanism with threading.Event.
+    Includes Native Drag & Drop and Append Mode for dropped/pasted files.
     """
 
     def __init__(self, target_path: Optional[str] = None):
@@ -701,6 +781,8 @@ class SafeLaunchGUI(tk.Tk):
         self.file_records: Dict[str, Dict[str, Any]] = {}
         self.is_scanning = False
         self.stop_event = threading.Event()
+        self.scan_lock = threading.Lock()
+        self.active_scan_queue: List[str] = []
         self.api_key = get_api_key()
 
         # Set application icon if available
@@ -717,12 +799,18 @@ class SafeLaunchGUI(tk.Tk):
         self._build_status_bar()
 
         # Global Hotkey Bindings
-        # <Escape> triggers instant Stop Scan
         self.bind_all("<Escape>", lambda event: self._stop_scan())
-        # <Delete> removes selected rows if focus is not in an Entry box
         self.bind("<Delete>", self._on_global_delete)
 
-        # Auto-initialize and start scan on open
+        # Global Paste Bindings (<Control-v>, <Control-V>, and VK_V = 86)
+        self.bind_all("<Control-v>", self._on_global_paste)
+        self.bind_all("<Control-V>", self._on_global_paste)
+        self.bind_all("<KeyPress>", self._on_global_key)
+
+        # Setup rock-solid native Drag & Drop via windnd
+        self._setup_drag_and_drop()
+
+        # Auto-initialize and start scan on open if target provided
         self.after(100, self._initialize_scan)
 
     def _center_window(self, width, height):
@@ -772,9 +860,62 @@ class SafeLaunchGUI(tk.Tk):
             foreground=[("!disabled", "white")]
         )
 
+    # ------------------------------------------------------------------------
+    # Native Win32 Drag & Drop Integration (via windnd)
+    # ------------------------------------------------------------------------
+
+    def _setup_drag_and_drop(self):
+        """
+        Enables rock-solid Win32 Drag & Drop using windnd.
+        Hooks both the main window (self), Treeview (self.tree), and container frames
+        so dropping files anywhere inside the window works instantly and reliably.
+        """
+        try:
+            self.update_idletasks()
+            import windnd
+            windnd.hook_dropfiles(self, func=self._on_files_dropped)
+            windnd.hook_dropfiles(self.tree, func=self._on_files_dropped)
+
+            # Also hook major containers to catch drops anywhere inside the window
+            hooked_hwnds = {self.winfo_id(), self.tree.winfo_id()}
+            for attr in ['header_frame', 'cards_frame', 'tree_container', 'action_frame', 'status_frame']:
+                w = getattr(self, attr, None)
+                if w:
+                    try:
+                        wid = w.winfo_id()
+                        if wid not in hooked_hwnds:
+                            windnd.hook_dropfiles(w, func=self._on_files_dropped)
+                            hooked_hwnds.add(wid)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"Could not hook windnd drag & drop: {e}")
+
+    def _on_files_dropped(self, files):
+        """
+        Callback received when files/folders are dropped onto the window.
+        Safely decodes incoming paths with UTF-8 and MBCS fallback for non-ASCII/Arabic paths.
+        """
+        decoded_paths = []
+        for f in files:
+            if isinstance(f, bytes):
+                try:
+                    f = f.decode('utf-8')
+                except UnicodeDecodeError:
+                    f = f.decode('mbcs', errors='ignore')
+            decoded_paths.append(os.path.abspath(f))
+
+        if decoded_paths:
+            self._append_targets(decoded_paths)
+
+    # ------------------------------------------------------------------------
+    # UI Layout Builders
+    # ------------------------------------------------------------------------
+
     def _build_header(self):
         header_frame = ttk.Frame(self, padding=(16, 12, 16, 8))
         header_frame.pack(fill=tk.X)
+        self.header_frame = header_frame
 
         title_box = ttk.Frame(header_frame)
         title_box.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -787,11 +928,10 @@ class SafeLaunchGUI(tk.Tk):
         )
         lbl_app_name.pack(anchor="w")
 
-        # Subheader with Target Path and [📋 Copy Path] button directly beside it
         target_row = ttk.Frame(title_box)
         target_row.pack(anchor="w", pady=(3, 0), fill=tk.X)
 
-        target_desc = self.target_path if self.target_path else "No target selected"
+        target_desc = self.target_path if self.target_path else "No target loaded (Drag & drop or Paste files here)"
         self.lbl_target = ttk.Label(
             target_row,
             text=f"Target: {target_desc}",
@@ -811,6 +951,14 @@ class SafeLaunchGUI(tk.Tk):
         # Top-right action controls
         top_btn_box = ttk.Frame(header_frame)
         top_btn_box.pack(side=tk.RIGHT)
+
+        # 1. Paste Target Button
+        self.btn_paste_target = ttk.Button(
+            top_btn_box,
+            text="📋 Paste Target",
+            command=self._paste_target
+        )
+        self.btn_paste_target.pack(side=tk.LEFT, padx=3)
 
         self.btn_select_file = ttk.Button(top_btn_box, text="Open File...", command=self._browse_file)
         self.btn_select_file.pack(side=tk.LEFT, padx=3)
@@ -836,6 +984,7 @@ class SafeLaunchGUI(tk.Tk):
     def _build_summary_cards(self):
         card_frame = ttk.Frame(self, padding=(16, 4, 16, 8))
         card_frame.pack(fill=tk.X)
+        self.cards_frame = card_frame
 
         self.card_total = self._create_card(card_frame, "Total Binaries", "0", "#e0e0e0", "#333333")
         self.card_clean = self._create_card(card_frame, "Clean (VT)", "0", "#c8e6c9", "#1b5e20")
@@ -856,9 +1005,9 @@ class SafeLaunchGUI(tk.Tk):
     def _build_treeview(self):
         tree_container = ttk.Frame(self, padding=(16, 0, 16, 8))
         tree_container.pack(fill=tk.BOTH, expand=True)
+        self.tree_container = tree_container
 
         columns = ("name", "type_size", "detections", "status", "sha256")
-        # Extended selectmode allows Ctrl+Click and Shift+Click multi-row selection
         self.tree = ttk.Treeview(tree_container, columns=columns, show="headings", selectmode="extended")
 
         self.tree.heading("name", text="File Name")
@@ -867,7 +1016,6 @@ class SafeLaunchGUI(tk.Tk):
         self.tree.heading("status", text="Status")
         self.tree.heading("sha256", text="SHA-256 Hash")
 
-        # Generous column width for full 64-char SHA-256 hash without truncation
         self.tree.column("name", width=220, minwidth=140, anchor="w")
         self.tree.column("type_size", width=110, minwidth=90, anchor="center")
         self.tree.column("detections", width=110, minwidth=90, anchor="center")
@@ -900,6 +1048,10 @@ class SafeLaunchGUI(tk.Tk):
         self.tree.bind("<Delete>", lambda event: self._remove_selected())
         self.tree.bind("<BackSpace>", lambda event: self._remove_selected())
 
+        # Select all rows with Ctrl+A
+        self.tree.bind("<Control-a>", lambda e: (self.tree.selection_set(self.tree.get_children()), "break")[1])
+        self.tree.bind("<Control-A>", lambda e: (self.tree.selection_set(self.tree.get_children()), "break")[1])
+
         # Context Menu on Right Click
         self.context_menu = tk.Menu(self, tearoff=0)
         self.context_menu.add_command(label="⚡ Scan Selected with VT", command=self._scan_selected)
@@ -927,9 +1079,25 @@ class SafeLaunchGUI(tk.Tk):
                 self._remove_selected()
                 return "break"
 
+    def _on_global_paste(self, event):
+        """Catches Ctrl+V on window level (unless user is typing in Entry/Text widget)."""
+        if isinstance(event.widget, (ttk.Entry, tk.Entry, tk.Text)):
+            return
+        self._paste_target()
+        return "break"
+
+    def _on_global_key(self, event):
+        """Hardware Virtual Key check for layout-independent Ctrl+V."""
+        if event.state & 0x0004:
+            if event.keycode == 86:  # VK_V
+                if not isinstance(event.widget, (ttk.Entry, tk.Entry, tk.Text)):
+                    self._paste_target()
+                    return "break"
+
     def _build_action_bar(self):
         action_frame = ttk.Frame(self, padding=(16, 4, 16, 4))
         action_frame.pack(fill=tk.X)
+        self.action_frame = action_frame
 
         # 1. Scan Selected Button
         self.btn_scan_selected = ttk.Button(
@@ -994,15 +1162,14 @@ class SafeLaunchGUI(tk.Tk):
         """
         status_frame = ttk.Frame(self, padding=(16, 6, 16, 10))
         status_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        self.status_frame = status_frame
 
-        # Progress bar container row with inline Cooldown Badge
         progress_row = ttk.Frame(status_frame)
         progress_row.pack(fill=tk.X, pady=(0, 4))
 
         self.progress_bar = ttk.Progressbar(progress_row, orient=tk.HORIZONTAL, mode='determinate')
         self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # Sleek inline Cooldown Pill Badge (hidden by default)
         self.badge_cooldown = tk.Label(
             progress_row,
             text="",
@@ -1015,11 +1182,10 @@ class SafeLaunchGUI(tk.Tk):
             bd=1
         )
 
-        # Information text row
         info_box = ttk.Frame(status_frame)
         info_box.pack(fill=tk.X)
 
-        self.lbl_status = ttk.Label(info_box, text="Ready", font=("Segoe UI", 9))
+        self.lbl_status = ttk.Label(info_box, text="Ready (Drag & drop or Paste files here)", font=("Segoe UI", 9))
         self.lbl_status.pack(side=tk.LEFT)
 
         self.lbl_quota_hint = ttk.Label(
@@ -1049,6 +1215,8 @@ class SafeLaunchGUI(tk.Tk):
         if not self.is_scanning:
             return
         self.stop_event.set()
+        with self.scan_lock:
+            self.active_scan_queue.clear()
         self.lbl_status.config(text="Stopping scan...")
 
     def _handle_scan_stopped(self):
@@ -1061,43 +1229,119 @@ class SafeLaunchGUI(tk.Tk):
         self._refresh_summary_cards()
 
     # ------------------------------------------------------------------------
-    # Initialization & Target Resolution
+    # Universal Target Loader & Appender (Append Mode)
     # ------------------------------------------------------------------------
 
-    def _initialize_scan(self):
-        """Discovers files and automatically starts background scan."""
-        if not self.target_path:
-            self.lbl_status.config(text="Select a file or folder using the buttons above.")
+    def _append_targets(self, paths: List[str]):
+        """
+        Appends dropped or pasted targets to the inspection table:
+        - For dropped folders: automatically extract root executable binaries (*.exe, *.dll).
+        - For dropped files: add valid files directly.
+        - Preserves existing table items (does NOT wipe or reset).
+        - Skips duplicate file paths if already present in the list.
+        - Automatically recalculates and refreshes the top summary cards (Total, Clean, Suspicious, Unknown).
+        - Auto-triggers background scanning for the newly appended items.
+        """
+        if not paths:
             return
 
-        if not os.path.exists(self.target_path):
-            messagebox.showerror("Error", f"Target not found:\n{self.target_path}")
+        clean_paths = []
+        for p in paths:
+            if isinstance(p, str):
+                p_clean = os.path.abspath(p.strip().strip('"').strip("'"))
+                if os.path.exists(p_clean):
+                    clean_paths.append(p_clean)
+
+        if not clean_paths:
+            self.lbl_status.config(text="No valid file or folder paths detected.")
             return
 
-        if os.path.isdir(self.target_path):
-            self.is_folder = True
-            self.files_to_scan = find_high_risk_binaries(self.target_path)
-            if not self.files_to_scan:
-                self.lbl_target.config(text=f"Folder: {self.target_path} (0 executables found)")
-                messagebox.showinfo(
-                    "No Executables Found",
-                    f"No high-risk executable binaries (*.exe, *.dll) were found in the root of:\n\n{self.target_path}"
+        # 1. Extract files from paths
+        new_candidates = []
+        empty_folders = []
+
+        for p in clean_paths:
+            if os.path.isdir(p):
+                # Folder: automatically extract root executable binaries (*.exe, *.dll)
+                bins = find_high_risk_binaries(p)
+                if bins:
+                    new_candidates.extend(bins)
+                else:
+                    empty_folders.append(os.path.basename(p))
+            elif os.path.isfile(p):
+                # File: add valid files directly
+                new_candidates.append(p)
+
+        if not new_candidates:
+            if empty_folders:
+                self.lbl_status.config(
+                    text=f"No *.exe or *.dll binaries found in: {', '.join(empty_folders)}"
                 )
-                self.lbl_status.config(text="No binaries found in target folder.")
-                return
+            else:
+                self.lbl_status.config(text="No valid files detected to inspect.")
+            return
 
-            self.lbl_target.config(
-                text=f"Folder: {self.target_path} ({len(self.files_to_scan)} binaries found)"
+        # 2. Skip duplicates if already present in the list
+        files_to_add = []
+        for f in new_candidates:
+            if f not in self.file_records and f not in files_to_add:
+                files_to_add.append(f)
+
+        if not files_to_add:
+            self.lbl_status.config(text="All dropped/pasted files are already in the list (skipped duplicates).")
+            return
+
+        # 3. Append newly added files to self.file_records and self.tree
+        for file_path in files_to_add:
+            fname = os.path.basename(file_path)
+            try:
+                fsize = format_file_size(os.path.getsize(file_path))
+            except Exception:
+                fsize = "Unknown"
+            ext = os.path.splitext(fname)[1].upper() or "FILE"
+
+            self.file_records[file_path] = {
+                "name": fname,
+                "path": file_path,
+                "size_str": f"{ext} ({fsize})",
+                "sha256": "",
+                "detections": "Pending...",
+                "status": "⏳ Queued",
+                "tag": "unknown",
+                "verdict": "PENDING"
+            }
+            if file_path not in self.files_to_scan:
+                self.files_to_scan.append(file_path)
+
+            self.tree.insert(
+                "",
+                tk.END,
+                iid=file_path,
+                values=(fname, f"{ext} ({fsize})", "Pending...", "⏳ Queued", "")
             )
+
+        # 4. Update Header Target Label
+        total_count = len(self.file_records)
+        if len(self.file_records) == len(files_to_add):
+            # First load
+            if len(clean_paths) == 1:
+                self.target_path = clean_paths[0]
+                if os.path.isdir(clean_paths[0]):
+                    self.lbl_target.config(text=f"Folder: {clean_paths[0]} ({len(files_to_add)} binaries)")
+                else:
+                    self.lbl_target.config(text=f"File: {clean_paths[0]}")
+            else:
+                self.target_path = os.path.dirname(clean_paths[0])
+                self.lbl_target.config(text=f"Targets: {len(files_to_add)} files loaded")
         else:
-            self.is_folder = False
-            self.files_to_scan = [self.target_path]
-            self.lbl_target.config(text=f"File: {self.target_path}")
+            # Appended load
+            self.lbl_target.config(text=f"Multiple Targets ({total_count} total files in list)")
 
-        # Populate initial rows in Treeview
-        self._populate_initial_rows()
+        # 5. Automatically recalculate and refresh top summary cards (Total, Clean, Suspicious, Unknown)
+        self._refresh_summary_cards()
+        self.card_total.config(text=str(total_count))
 
-        # Check API Key
+        # 6. Check API Key
         self.api_key = get_api_key()
         if not self.api_key:
             dlg = ApiKeyDialog(self)
@@ -1105,22 +1349,58 @@ class SafeLaunchGUI(tk.Tk):
             self.api_key = get_api_key()
 
             if not self.api_key and dlg.result_action == "browser_mode":
-                self._handle_no_key_fallback()
+                self._handle_no_key_fallback(files_to_add)
                 return
 
-        # Auto-Scan: automatically starts scanning without waiting for clicks
-        self._start_scan_thread(self.files_to_scan)
+        # 7. Auto-trigger background scanning for the newly appended items
+        if not self.is_scanning:
+            self.lbl_status.config(text=f"Added {len(files_to_add)} new file(s). Starting scan...")
+            self._start_scan_thread(files_to_add)
+        else:
+            with self.scan_lock:
+                self.active_scan_queue.extend(files_to_add)
+            self.progress_bar['maximum'] = self.progress_bar['maximum'] + len(files_to_add)
+            self.lbl_status.config(
+                text=f"Added {len(files_to_add)} new file(s) to scan queue. Scan in progress..."
+            )
 
-    def _handle_no_key_fallback(self):
+    def load_and_scan_targets(self, paths: List[str], append: bool = True):
+        """Universal target loader - delegates directly to _append_targets."""
+        self._append_targets(paths)
+
+    def _paste_target(self):
+        """
+        Handler for [ 📋 Paste Target ] button and Ctrl+V hotkey.
+        Extracts copied files (CF_HDROP) or path strings from Windows Clipboard.
+        """
+        paths = get_target_from_clipboard()
+        if not paths:
+            self.lbl_status.config(text="Clipboard does not contain a valid file or folder path.")
+            show_notification(
+                "Paste Target",
+                "Clipboard does not contain a valid file or folder path.",
+                timeout_seconds=2
+            )
+            return
+
+        self._append_targets(paths)
+
+    def _initialize_scan(self):
+        """Initial check on app launch."""
+        if self.target_path:
+            self._append_targets([self.target_path])
+
+    def _handle_no_key_fallback(self, target_subset: Optional[List[str]] = None):
         """
         Fallback when user opts out of API key:
         Computes SHA-256 for files and opens the main executable in the browser.
         Accurately updates the status bar without claiming files are clean.
         """
-        if not self.files_to_scan:
+        files_to_process = target_subset if target_subset else self.files_to_scan
+        if not files_to_process:
             return
 
-        for f in self.files_to_scan:
+        for f in files_to_process:
             try:
                 h = calculate_sha256(f)
                 self.file_records[f]["sha256"] = h
@@ -1130,10 +1410,11 @@ class SafeLaunchGUI(tk.Tk):
             except Exception as e:
                 self.file_records[f]["status"] = f"Error: {e}"
 
-        if self.is_folder:
-            main_exe = identify_main_executable(self.target_path, self.files_to_scan)
-        else:
-            main_exe = self.files_to_scan[0]
+        main_exe = files_to_process[0]
+        if self.target_path and os.path.isdir(self.target_path):
+            identified = identify_main_executable(self.target_path, files_to_process)
+            if identified:
+                main_exe = identified
 
         if main_exe and main_exe in self.file_records:
             sha256 = self.file_records[main_exe]["sha256"]
@@ -1160,42 +1441,6 @@ class SafeLaunchGUI(tk.Tk):
         self._hide_cooldown_badge()
         self._refresh_summary_cards()
 
-    def _populate_initial_rows(self):
-        """Clears and inserts file records into Treeview."""
-        self.tree.delete(*self.tree.get_children())
-        self.file_records.clear()
-
-        for file_path in self.files_to_scan:
-            fname = os.path.basename(file_path)
-            try:
-                fsize = format_file_size(os.path.getsize(file_path))
-            except Exception:
-                fsize = "Unknown"
-            ext = os.path.splitext(fname)[1].upper()
-
-            self.file_records[file_path] = {
-                "name": fname,
-                "path": file_path,
-                "size_str": f"{ext} ({fsize})",
-                "sha256": "",
-                "detections": "Pending...",
-                "status": "⏳ Queued",
-                "tag": "unknown",
-                "verdict": "PENDING"
-            }
-
-            self.tree.insert(
-                "",
-                tk.END,
-                iid=file_path,
-                values=(fname, f"{ext} ({fsize})", "Pending...", "⏳ Queued", "")
-            )
-
-        self.card_total.config(text=str(len(self.files_to_scan)))
-        self.card_clean.config(text="0")
-        self.card_suspicious.config(text="0")
-        self.card_unknown.config(text=str(len(self.files_to_scan)))
-
     # ------------------------------------------------------------------------
     # Background Scanning & Rate Limiting (4 req/min)
     # ------------------------------------------------------------------------
@@ -1203,7 +1448,10 @@ class SafeLaunchGUI(tk.Tk):
     def _start_scan_thread(self, target_files: Optional[List[str]] = None):
         """Launches background worker with responsive threading.Event cancellation."""
         if self.is_scanning:
-            messagebox.showinfo("Scan Running", "A scan is already in progress. Click 'Stop Scan' or press Esc to cancel.")
+            if target_files:
+                with self.scan_lock:
+                    self.active_scan_queue.extend(target_files)
+                self.progress_bar['maximum'] = self.progress_bar['maximum'] + len(target_files)
             return
 
         files_to_process = list(target_files) if target_files else list(self.files_to_scan)
@@ -1212,26 +1460,40 @@ class SafeLaunchGUI(tk.Tk):
 
         self.stop_event.clear()
         self._set_ui_scanning_state(True)
-        self.progress_bar['maximum'] = len(files_to_process)
+        with self.scan_lock:
+            self.active_scan_queue = list(files_to_process)
+        self.progress_bar['maximum'] = len(self.active_scan_queue)
         self.progress_bar['value'] = 0
 
-        thread = threading.Thread(target=self._scan_worker, args=(files_to_process,), daemon=True)
+        thread = threading.Thread(target=self._scan_worker, daemon=True)
         thread.start()
 
-    def _scan_worker(self, queue_files: List[str]):
-        total_files = len(queue_files)
+    def _scan_worker(self):
+        index = 0
         was_stopped = False
 
-        for index, file_path in enumerate(queue_files):
+        while True:
             if self.stop_event.is_set():
                 was_stopped = True
                 break
 
+            with self.scan_lock:
+                if not self.active_scan_queue:
+                    break
+                file_path = self.active_scan_queue.pop(0)
+
+            # Skip if removed by user while queued
+            if file_path not in self.file_records:
+                continue
+
+            index += 1
+            with self.scan_lock:
+                total_files = index + len(self.active_scan_queue)
             fname = os.path.basename(file_path)
 
             # Step 1: Calculate SHA-256
             self.after(0, self._update_row_status, file_path, "⏳ Hashing...", "scanning")
-            self.after(0, self._set_status_text, f"Inspecting file {index+1} of {total_files}: Calculating SHA-256 for {fname}...")
+            self.after(0, self._set_status_text, f"Inspecting file {index} of {total_files}: Calculating SHA-256 for {fname}...")
 
             try:
                 sha256 = calculate_sha256(file_path)
@@ -1253,7 +1515,7 @@ class SafeLaunchGUI(tk.Tk):
                 wait_time = vt_rate_limiter.get_wait_seconds()
 
                 if wait_time > 0:
-                    completed = self._handle_rate_limit_wait(math.ceil(wait_time), index + 1, total_files)
+                    completed = self._handle_rate_limit_wait(math.ceil(wait_time), index, total_files)
                     if not completed or self.stop_event.is_set():
                         was_stopped = True
                         break
@@ -1264,14 +1526,14 @@ class SafeLaunchGUI(tk.Tk):
 
                 # Query VirusTotal API
                 self.after(0, self._update_row_status, file_path, "⏳ Querying VT API...", "scanning")
-                self.after(0, self._set_status_text, f"Inspecting file {index+1} of {total_files}: Querying VirusTotal for {fname}...")
+                self.after(0, self._set_status_text, f"Inspecting file {index} of {total_files}: Querying VirusTotal for {fname}...")
 
                 api_result = query_virustotal_api(sha256, self.api_key)
                 vt_rate_limiter.record_request()
 
                 # Handle HTTP 429 automatically if encountered
                 if api_result["status"] == "rate_limited":
-                    completed = self._handle_rate_limit_wait(FREE_TIER_RATE_LIMIT_DELAY, index + 1, total_files)
+                    completed = self._handle_rate_limit_wait(FREE_TIER_RATE_LIMIT_DELAY, index, total_files)
                     if not completed or self.stop_event.is_set():
                         was_stopped = True
                         break
@@ -1328,7 +1590,6 @@ class SafeLaunchGUI(tk.Tk):
         """
         Coordinates cooldown countdown using threading.Event.wait()
         for INSTANT cancellation (0ms delay) when Stop is requested.
-        Returns True if cooldown completed, False if stopped.
         """
         for remaining in range(wait_seconds, 0, -1):
             if self.stop_event.is_set():
@@ -1341,7 +1602,6 @@ class SafeLaunchGUI(tk.Tk):
             )
             self.after(0, self._show_cooldown_badge, f"⏳ Cooldown: {remaining}s (API Quota)")
 
-            # Immediate wakeup if stop_event is set
             if self.stop_event.wait(timeout=1.0):
                 self.after(0, self._hide_cooldown_badge)
                 return False
@@ -1475,7 +1735,6 @@ class SafeLaunchGUI(tk.Tk):
         selected_ids = list(self.tree.selection())
 
         if not selected_ids:
-            # If nothing selected, find unverified rows
             unverified = [
                 path for path, rec in self.file_records.items()
                 if rec.get("verdict") in ("PENDING", "UNVERIFIED")
@@ -1508,6 +1767,9 @@ class SafeLaunchGUI(tk.Tk):
             return
 
         count = len(selected_ids)
+        with self.scan_lock:
+            self.active_scan_queue = [f for f in self.active_scan_queue if f not in selected_ids]
+
         for item_id in selected_ids:
             if self.tree.exists(item_id):
                 self.tree.delete(item_id)
@@ -1516,7 +1778,6 @@ class SafeLaunchGUI(tk.Tk):
             if item_id in self.files_to_scan:
                 self.files_to_scan.remove(item_id)
 
-        # Refresh cards and status bar
         self._refresh_summary_cards()
         self.lbl_status.config(text=f"Removed {count} item(s) from list ({len(self.file_records)} remaining).")
 
@@ -1539,7 +1800,6 @@ class SafeLaunchGUI(tk.Tk):
                     continue
             urls.append(f"https://www.virustotal.com/gui/file/{sha256}")
 
-        # Copy hash to clipboard (single hash or newline-delimited)
         if len(records) == 1:
             copy_to_clipboard(records[0]["sha256"])
         else:
@@ -1547,7 +1807,6 @@ class SafeLaunchGUI(tk.Tk):
             if hashes:
                 copy_to_clipboard("\n".join(hashes))
 
-        # Open each report in default browser
         for url in urls:
             webbrowser.open(url, new=2)
 
@@ -1643,7 +1902,22 @@ class SafeLaunchGUI(tk.Tk):
         if self.is_scanning:
             return
         vt_rate_limiter.reset()
-        self._populate_initial_rows()
+        for f in self.files_to_scan:
+            if f in self.file_records:
+                self.file_records[f]["verdict"] = "PENDING"
+                self.file_records[f]["status"] = "⏳ Queued"
+                self.tree.item(
+                    f,
+                    values=(
+                        self.file_records[f]["name"],
+                        self.file_records[f]["size_str"],
+                        "Pending...",
+                        "⏳ Queued",
+                        self.file_records[f].get("sha256", "")
+                    ),
+                    tags=("unknown",)
+                )
+        self._refresh_summary_cards()
         self._start_scan_thread(self.files_to_scan)
 
     def _browse_file(self):
@@ -1652,33 +1926,14 @@ class SafeLaunchGUI(tk.Tk):
             filetypes=[("Executable & DLL Files", "*.exe;*.dll"), ("All Files", "*.*")]
         )
         if file_selected:
-            if self.is_scanning:
-                self._stop_scan()
-            self.target_path = file_selected
-            self.is_folder = False
-            self.files_to_scan = [file_selected]
-            self.lbl_target.config(text=f"File: {file_selected}")
-            vt_rate_limiter.reset()
-            self._populate_initial_rows()
-            # Auto-Scan on open
-            self._start_scan_thread(self.files_to_scan)
+            # Append mode
+            self.load_and_scan_targets([file_selected], append=True)
 
     def _browse_folder(self):
         folder_selected = filedialog.askdirectory(title="Select Folder to Inspect")
         if folder_selected:
-            if self.is_scanning:
-                self._stop_scan()
-            self.target_path = folder_selected
-            self.is_folder = True
-            self.files_to_scan = find_high_risk_binaries(folder_selected)
-            if not self.files_to_scan:
-                messagebox.showinfo("No Executables", f"No *.exe or *.dll files found in {folder_selected}")
-                return
-            self.lbl_target.config(text=f"Folder: {folder_selected} ({len(self.files_to_scan)} binaries found)")
-            vt_rate_limiter.reset()
-            self._populate_initial_rows()
-            # Auto-Scan on open
-            self._start_scan_thread(self.files_to_scan)
+            # Append mode
+            self.load_and_scan_targets([folder_selected], append=True)
 
     def _open_api_settings(self):
         dlg = ApiKeyDialog(self, current_key=self.api_key)
